@@ -1,0 +1,12 @@
+# Build / test artifacts
+reminders/tests/test_libreminders
+**/result
+**/result-*
+**/.direnv/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
