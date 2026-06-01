@@ -30,16 +30,6 @@ load against basecamp v0.1.2 because of SDK ABI mismatches in the
 `nix flake update` after any change to `flake.nix` — without the update,
 the `flake.lock` keeps the old SDK pin and the new tag does nothing.
 
-## Status
-
-V1 is a Logos demo, not a daily-driver tool. Known V1 limitations,
-listed honestly:
-
-- **No persistence.** Reminders live in memory; basecamp restart loses them.
-- **Capped at 64 pending reminders** (`LIBREMINDERS_CAPACITY`).
-- **Basecamp must be open** for a reminder to fire.
-- **No icon** — `metadata.json` points at `reminders-ui-qml/icons/reminders.png`
-  but ships empty. Drop in any 64×64 PNG.
 
 Popup visibility (the previously-flagged "risky assumption") is
 **verified working** — the `Dialog` does pop modal-style on top of the
