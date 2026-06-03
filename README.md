@@ -1,17 +1,21 @@
 # logos-reminder-module
 
 A local sticky reminder mini-app for Logos basecamp. V1 single-device:
-type reminder text, pick a duration ("in N minutes"), Save, and a popup
-fires when the time arrives.
+type reminder text, pick a date and time from a calendar/tumbler picker,
+Save, and a **native OS notification** fires when the time arrives
+(plus an in-app popup if basecamp is in foreground).
 
 Two modules:
 
 - **`reminders`** (core) — wraps a small C library (`libreminders`) that
   owns the reminder list. A `QTimer` polls every second; when a reminder
   is due, the plugin emits a `reminderDue` event.
-- **`reminders_ui_qml`** (QML UI) — minimal frontend: text input, minutes
-  spinbox, save button, pending-list with relative countdowns, and a
-  modal `Dialog` that opens on `reminderDue`.
+- **`reminders_ui_qml`** (QML UI) — text input, `MonthGrid`-based calendar
+  date picker, dual-`Tumbler` time picker (24-hour), pending-list with
+  live relative countdowns, in-app modal popup on `reminderDue`, and
+  native OS notifications via `Qt.labs.platform.SystemTrayIcon` so
+  reminders surface on top of whichever app you're using, not just
+  inside basecamp.
 
 Same `core` + `ui_qml` split as the tic-tac-toe example. Delivery / peer
 broadcast is intentionally **not** in V1.
@@ -26,14 +30,61 @@ Built and verified against:
 
 Earlier `logos-module-builder` tags (`tutorial-v1`, `0.1.2-RC1`) crash on
 load against basecamp v0.1.2 because of SDK ABI mismatches in the
-`PluginInterface` vtable layout. Use `tutorial-v2` and run
-`nix flake update` after any change to `flake.nix` — without the update,
-the `flake.lock` keeps the old SDK pin and the new tag does nothing.
+`PluginInterface` vtable layout. Use `tutorial-v2`.
 
+## Gotchas hit while building this (in order)
 
-Popup visibility (the previously-flagged "risky assumption") is
-**verified working** — the `Dialog` does pop modal-style on top of the
-reminders tab when a reminder fires, even when another tab is focused.
+In rough order of how painful they were to debug. None are documented
+in the official tutorial as of writing; capturing them here for the
+next person.
+
+1. **`nix flake update` after every `flake.nix` change.** Editing the
+   `logos-module-builder.url` ref in `flake.nix` does *nothing* on its
+   own — the pinned commit lives in `flake.lock`. Without an explicit
+   `nix flake update`, you can swap tags and rebuild all day and you'll
+   still get the old SDK. This is the single thing that cost me the
+   most time.
+2. **Nix flakes only stage *git-tracked* files into the build sandbox.**
+   Untracked files (e.g. a freshly-dropped `.wav` or a new `.qml`
+   component) silently vanish from the `.lgx` with no warning. Always
+   `git add` new resources before `nix build`.
+3. **`view: "Main.qml"` collapses the bundle to a single file.** The
+   `mkLogosQmlModule` builder only copies the *view directory*
+   recursively when `view` points at a subdirectory (e.g.
+   `qml/Main.qml`). With `view: "Main.qml"`, viewDir is `"."` and the
+   builder falls through to a single-file copy — every other resource
+   in your project root is silently dropped. Layout your project as
+   `qml/Main.qml` + `qml/extras…` and everything Just Works.
+4. **`Q_INVOKABLE` numeric params must be `int`, not `qint64`.** The
+   Logos IPC bridge marshals JS numbers as `QVariant(int, ...)` and
+   Qt's meta system does not auto-promote `int → qlonglong`. A slot
+   declared with `qint64` fails to dispatch with `QMetaObject::invokeMethod:
+   No such method...` Switching to `int` is the fix. Epoch seconds fit
+   in int32 until 2038, which is fine for a demo.
+5. **`Q_INVOKABLE` returning `QVariantList` arrives as a JSON-encoded
+   string in QML.** Signal payloads emitted via `eventResponse(QString,
+   QVariantList)` come through as native JS arrays. The asymmetry is
+   surprising — your QML consumer needs `JSON.parse` for method
+   returns but not for signal payloads.
+6. **`QtMultimedia` is not shipped in basecamp v0.1.2.** There is no
+   way to play audio in pure QML on this build (`SoundEffect`,
+   `MediaPlayer`, and friends all live in `QtMultimedia`). This repo
+   keeps a `ChimePlayer.qml` + `pop.wav` scaffold loaded via a `Loader`
+   so it'll start working the day basecamp ships `QtMultimedia`. In
+   the meantime, use `Qt.labs.platform.SystemTrayIcon.showMessage()`
+   for OS-level notifications — much better UX than sound anyway.
+7. **macOS `Dialog` body renders white.** Default white text on white
+   background is invisible. Use dark text colors in the dialog
+   `contentItem`.
+8. **Overriding `Dialog`'s `contentItem` breaks `standardButtons`
+   auto-close.** Clicking OK fires `accepted` but doesn't call
+   `close()`. Wire `onAccepted: close()` and `onRejected: close()`
+   explicitly.
+
+Popup visibility (the originally-flagged "risky assumption") is
+**verified working** — the in-app `Dialog` does pop modal-style on top
+of the reminders tab, and the OS notification fires regardless of which
+app has focus.
 
 ## Project layout
 
@@ -53,9 +104,14 @@ logos-reminder-module/
 │   ├── metadata.json
 │   └── flake.nix
 └── reminders-ui-qml/          # QML UI plugin
-    ├── icons/                 # (drop in reminders.png)
-    ├── Main.qml
-    ├── metadata.json
+    ├── icons/
+    │   └── reminders.png      # 64×64 menu-bar / module-list icon
+    ├── qml/                   # view directory (must be a subdir, not ".")
+    │   ├── Main.qml           # date+time pickers, pending list, OS notifs
+    │   ├── ChimePlayer.qml    # forward-compat audio (no-op on v0.1.2)
+    │   └── sounds/
+    │       └── pop.wav        # bundled but unplayable until QtMultimedia ships
+    ├── metadata.json          # view: "qml/Main.qml"  ← critical
     └── flake.nix
 ```
 
@@ -150,9 +206,15 @@ Events emitted:
 - **Delivery broadcast** of new reminders on a content topic
   (`/reminders/1/events/proto`) using the same logos-delivery-module
   pattern as tictactoe multiplayer. Receiving peers schedule locally.
-- **JSON-file persistence** in the module data dir.
-- **OS notifications** (depending on smoke-test outcome).
+- **JSON-file persistence** in the module data dir — survive basecamp
+  restart.
+- **Sound chime** — once basecamp ships `QtMultimedia`, the existing
+  `ChimePlayer.qml` scaffold will start working without code changes.
+  Until then, OS notifications are the audible signal (they ride
+  whatever notification sound macOS is configured for).
 - **Snooze / recurrence** — not yet.
+- **Click-to-focus** on the OS notification: wire `SystemTrayIcon.
+  onMessageClicked` to bring basecamp's window forward.
 
 ## License
 
