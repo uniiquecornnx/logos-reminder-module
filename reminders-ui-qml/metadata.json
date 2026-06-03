@@ -4,7 +4,7 @@
   "type": "ui_qml",
   "category": "productivity",
   "description": "Reminders UI — QML frontend for the reminders core module",
-  "view": "Main.qml",
+  "view": "qml/Main.qml",
   "icon": "icons/reminders.png",
   "dependencies": ["reminders"],
 
